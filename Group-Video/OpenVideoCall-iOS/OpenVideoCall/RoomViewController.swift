@@ -9,6 +9,7 @@
 import UIKit
 import AgoraRtcKit
 import AgoraRtcCryptoLoader
+import ReplayKit
 
 protocol RoomVCDataSource: NSObjectProtocol {
     func roomVCNeedAgoraKit() -> AgoraRtcEngineKit
@@ -26,6 +27,8 @@ class RoomViewController: UIViewController {
     @IBOutlet weak var beautyButton: UIButton!
     @IBOutlet weak var muteVideoButton: UIButton!
     @IBOutlet weak var muteAudioButton: UIButton!
+    
+    private lazy var recordButton = UIButton()
     
     @IBOutlet var backgroundDoubleTap: UITapGestureRecognizer!
     
@@ -148,6 +151,15 @@ class RoomViewController: UIViewController {
         super.viewDidLoad()
         title = settings.roomName
         loadAgoraKit()
+        
+        view.addSubview(recordButton)
+        recordButton.setTitle("Toggle Record", for: .normal)
+        recordButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            recordButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            recordButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+        recordButton.addTarget(self, action: #selector(toggleScreenCapture), for: .touchUpInside)
     }
     
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
@@ -231,6 +243,16 @@ private extension RoomViewController {
         // Step 5, join channel and start group chat
         // If join  channel success, agoraKit triggers it's delegate function
         // 'rtcEngine(_ engine: AgoraRtcEngineKit, didJoinChannel channel: String, withUid uid: UInt, elapsed: Int)'
+        
+        agoraKit.setAudioSessionOperationRestriction(.all)
+        agoraKit.setAudioProfile(.musicStandard, scenario: .gameStreaming)
+        if #available(iOS 10.0, *) {
+            try? AVAudioSession.sharedInstance().setCategory(.playAndRecord,
+                                                            mode: .videoChat,
+                                                            options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
+        
         agoraKit.joinChannel(byToken: KeyCenter.Token, channelId: settings.roomName!, info: nil, uid: 0, joinSuccess: nil)
         setIdleTimerActive(false)
     }
@@ -451,4 +473,31 @@ private extension RoomViewController {
         }
         messageVC?.append(alert: string)
     }
+}
+
+extension RoomViewController: RPPreviewViewControllerDelegate {
+    @objc func toggleScreenCapture() {
+        guard #available(iOS 10.0, *) else { return }
+        if !RPScreenRecorder.shared().isRecording {
+            RPScreenRecorder.shared().startRecording(handler: { (_) in })
+            
+                try? AVAudioSession.sharedInstance().setCategory(.multiRoute,
+                                                                 mode: .videoChat,
+                                                                 options: [.mixWithOthers])
+        } else {
+            RPScreenRecorder.shared().stopRecording(handler: { (preview, _) in
+                if let preview = preview {
+                    preview.modalPresentationStyle = .fullScreen
+                    preview.previewControllerDelegate = self
+                    self.present(preview, animated: true, completion: nil)
+                }
+            })
+        }
+    }
+    
+    func previewControllerDidFinish(_ previewController: RPPreviewViewController) {
+        previewController.dismiss(animated: true)
+    }
+    
+    func previewController(_ previewController: RPPreviewViewController, didFinishWithActivityTypes activityTypes: Set<String>) { }
 }
