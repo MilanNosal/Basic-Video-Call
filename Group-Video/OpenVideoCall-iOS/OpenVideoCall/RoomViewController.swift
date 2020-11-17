@@ -186,7 +186,7 @@ class RoomViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = settings.roomName
-        loadAgoraKit()
+//        loadAgoraKit()
         
         view.addSubview(recordButton)
         recordButton.isHidden = true
@@ -196,8 +196,12 @@ class RoomViewController: UIViewController {
             recordButton.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             recordButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
+        recordButton.setTitleColor(.red, for: .normal)
         recordButton.addTarget(self, action: #selector(toggleScreenCapture), for: .touchUpInside)
         
+        try? AVAudioSession.sharedInstance().setCategory(.multiRoute,
+                                                         mode: .videoChat,
+                                                         options: [.mixWithOthers])
         performStartRoomCallAction(callId: UUID())
     }
     
@@ -539,9 +543,9 @@ extension RoomViewController: CXProviderDelegate {
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
 
         // Configure the AVAudioSession
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord,
-                                                        mode: .videoChat,
-                                                        options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+        try? AVAudioSession.sharedInstance().setCategory(.multiRoute,
+                                                         mode: .videoChat,
+                                                         options: [.mixWithOthers])
         try? AVAudioSession.sharedInstance().setActive(true)
 
         callKitProvider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: nil)
@@ -566,15 +570,11 @@ extension RoomViewController: CXProviderDelegate {
 
     func performRoomConnectForRoomCall(completionHandler: @escaping (Bool) -> Swift.Void) {
         callKitCompletionHandler = completionHandler
-        agoraKit.joinChannel(byToken: KeyCenter.Token, channelId: settings.roomName!, info: nil, uid: 0, joinSuccess: nil)
+//        agoraKit.joinChannel(byToken: KeyCenter.Token, channelId: settings.roomName!, info: nil, uid: 0, joinSuccess: nil)
+        completionHandler(true)
     }
     
     func performStartRoomCallAction(callId: UUID) {
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord,
-                                                        mode: .videoChat,
-                                                        options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
-        try? AVAudioSession.sharedInstance().setActive(true)
-
         let callHandle = CXHandle(type: .generic, value: "Room")
         let startCallAction = CXStartCallAction(call: callId, handle: callHandle)
 
