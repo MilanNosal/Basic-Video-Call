@@ -10,6 +10,7 @@ import UIKit
 import AgoraRtcKit
 import AgoraRtcCryptoLoader
 import ReplayKit
+import CallKit
 
 protocol RoomVCDataSource: NSObjectProtocol {
     func roomVCNeedAgoraKit() -> AgoraRtcEngineKit
@@ -130,6 +131,12 @@ class RoomViewController: UIViewController {
             messageTableContainerView.isHidden = !isDebugMode
         }
     }
+
+    // CallKit components
+    fileprivate let callKitProvider: CXProvider
+    fileprivate let callKitCallController: CXCallController
+    fileprivate var callKitCompletionHandler: ((Bool) -> Void?)?
+    private var callUUID: UUID?
     
     private var videoSessions = [VideoSession]() {
         didSet {
@@ -147,12 +154,42 @@ class RoomViewController: UIViewController {
    
     weak var dataSource: RoomVCDataSource?
     
+    required init?(coder: NSCoder) {
+        
+        let configuration = CXProviderConfiguration(localizedName: "Test")
+        configuration.maximumCallGroups = 1
+        configuration.maximumCallsPerCallGroup = 1
+        configuration.supportsVideo = true
+
+        configuration.supportedHandleTypes = [.generic]
+
+        callKitProvider = CXProvider(configuration: configuration)
+        callKitCallController = CXCallController()
+        
+        super.init(coder: coder)
+
+        callKitProvider.setDelegate(self, queue: nil)
+    }
+    
+    deinit {
+        // CallKit has an odd API contract where the developer must call invalidate or the CXProvider is leaked.
+        callKitProvider.invalidate()
+    }
+
+    override func willMove(toParent parent: UIViewController?) {
+        super.willMove(toParent: parent)
+        if parent == nil {
+            performEndRoomCallAction()
+        }
+    }
+    
     override func viewDidLoad() {
         super.viewDidLoad()
         title = settings.roomName
         loadAgoraKit()
         
         view.addSubview(recordButton)
+        recordButton.isHidden = true
         recordButton.setTitle("Toggle Record", for: .normal)
         recordButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -160,6 +197,8 @@ class RoomViewController: UIViewController {
             recordButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
         recordButton.addTarget(self, action: #selector(toggleScreenCapture), for: .touchUpInside)
+        
+        performStartRoomCallAction(callId: UUID())
     }
     
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
@@ -178,10 +217,6 @@ class RoomViewController: UIViewController {
         default:
             break
         }
-    }
-    
-    deinit {
-        leaveChannel()
     }
     
     @IBAction func doAudioMixingPressed(_ sender: UIButton) {
@@ -214,7 +249,7 @@ private extension RoomViewController {
     func loadAgoraKit() {
         // Step 1, set delegate
         agoraKit.delegate = self
-        // Step 2, set communication mode
+        // Step 2, set channel profile
         agoraKit.setChannelProfile(.communication)
         
         // Step 3, enable the video module
@@ -246,14 +281,7 @@ private extension RoomViewController {
         
         agoraKit.setAudioSessionOperationRestriction(.all)
         agoraKit.setAudioProfile(.musicStandard, scenario: .gameStreaming)
-        if #available(iOS 10.0, *) {
-            try? AVAudioSession.sharedInstance().setCategory(.playAndRecord,
-                                                            mode: .videoChat,
-                                                            options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
-            try? AVAudioSession.sharedInstance().setActive(true)
-        }
         
-        agoraKit.joinChannel(byToken: KeyCenter.Token, channelId: settings.roomName!, info: nil, uid: 0, joinSuccess: nil)
         setIdleTimerActive(false)
     }
     
@@ -293,6 +321,7 @@ extension RoomViewController: AgoraRtcEngineDelegate {
     ///   - elapsed: Time elapsed (ms) from the user calling the joinChannelByToken method until the SDK triggers this callback.
     func rtcEngine(_ engine: AgoraRtcEngineKit, didJoinChannel channel: String, withUid uid: UInt, elapsed: Int) {
         info(string: "Join channel: \(channel)")
+        callKitCompletionHandler?(true)
     }
     
     /// Occurs when the connection between the SDK and the server is interrupted.
@@ -479,6 +508,7 @@ extension RoomViewController: RPPreviewViewControllerDelegate {
     @objc func toggleScreenCapture() {
         guard #available(iOS 10.0, *) else { return }
         if !RPScreenRecorder.shared().isRecording {
+            RPScreenRecorder.shared().isMicrophoneEnabled = true
             RPScreenRecorder.shared().startRecording(handler: { (_) in })
             
                 try? AVAudioSession.sharedInstance().setCategory(.multiRoute,
@@ -500,4 +530,77 @@ extension RoomViewController: RPPreviewViewControllerDelegate {
     }
     
     func previewController(_ previewController: RPPreviewViewController, didFinishWithActivityTypes activityTypes: Set<String>) { }
+}
+
+extension RoomViewController: CXProviderDelegate {
+    func providerDidReset(_: CXProvider) {
+    }
+
+    func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+
+        // Configure the AVAudioSession
+        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord,
+                                                        mode: .videoChat,
+                                                        options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        callKitProvider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: nil)
+
+        performRoomConnectForRoomCall() { success in
+            if success {
+                provider.reportOutgoingCall(with: action.callUUID, connectedAt: Date())
+                action.fulfill()
+                
+                self.recordButton.isHidden = false
+            } else {
+                action.fail()
+            }
+        }
+    }
+
+    func provider(_: CXProvider, perform action: CXEndCallAction) {
+        leaveChannel()
+
+        action.fulfill()
+    }
+
+    func performRoomConnectForRoomCall(completionHandler: @escaping (Bool) -> Swift.Void) {
+        callKitCompletionHandler = completionHandler
+        agoraKit.joinChannel(byToken: KeyCenter.Token, channelId: settings.roomName!, info: nil, uid: 0, joinSuccess: nil)
+    }
+    
+    func performStartRoomCallAction(callId: UUID) {
+        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord,
+                                                        mode: .videoChat,
+                                                        options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+
+        let callHandle = CXHandle(type: .generic, value: "Room")
+        let startCallAction = CXStartCallAction(call: callId, handle: callHandle)
+
+        startCallAction.isVideo = true
+
+        let transaction = CXTransaction(action: startCallAction)
+
+        callUUID = callId
+        callKitCallController.request(transaction) { error in
+            if let error = error {
+                print(">>>> error: \(error)")
+            }
+        }
+    }
+
+    func performEndRoomCallAction() {
+        guard let callUUID = callUUID else { return }
+
+        let endCallAction = CXEndCallAction(call: callUUID)
+        let transaction = CXTransaction(action: endCallAction)
+
+        callKitCallController.request(transaction) { error in
+            if let error = error {
+                print(">>>> error: \(error)")
+                self.callKitProvider.reportCall(with: callUUID, endedAt: nil, reason: CXCallEndedReason.remoteEnded)
+            }
+        }
+    }
 }
